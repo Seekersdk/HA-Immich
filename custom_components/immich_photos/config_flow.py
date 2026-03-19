@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .api import ImmichApiClient, ImmichConnectionError, ImmichAuthError
 from .const import (
@@ -22,13 +23,24 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+STEP_USER_DATA_SCHEMA = vol.Schema({
+    vol.Required(CONF_HOST): str,
+    vol.Required(CONF_API_KEY): str,
+})
+
 
 def _normalize_host(host: str) -> str:
-    """Ensure host has a scheme and no trailing slash."""
     host = host.strip()
     if not host.startswith(("http://", "https://")):
         host = "http://" + host
     return host.rstrip("/")
+
+
+async def _validate_input(host: str, api_key: str) -> None:
+    """Validate credentials. Raises ImmichAuthError or ImmichConnectionError."""
+    async with aiohttp.ClientSession() as session:
+        client = ImmichApiClient(host, api_key, session)
+        await client.validate()
 
 
 def _multi_select_validator(options: dict):
@@ -51,7 +63,7 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._api_key: str = ""
         self._available_albums: dict[str, str] = {}
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -59,36 +71,38 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._api_key = user_input[CONF_API_KEY].strip()
 
             try:
-                connector = aiohttp.TCPConnector(ssl=False)
-                async with aiohttp.ClientSession(connector=connector) as session:
-                    client = ImmichApiClient(self._host, self._api_key, session)
-                    await client.validate()
-                    albums = await client.get_albums()
-                    self._available_albums = {**ALBUM_VIRTUAL}
-                    for a in albums:
-                        self._available_albums[a.id] = a.name
+                await _validate_input(self._host, self._api_key)
             except ImmichAuthError:
                 errors["base"] = "invalid_auth"
             except ImmichConnectionError:
                 errors["base"] = "cannot_connect"
             except Exception:
-                _LOGGER.exception("Unexpected error connecting to Immich at %s", self._host)
-                errors["base"] = "cannot_connect"
-            else:
+                _LOGGER.exception("Unexpected error connecting to %s", self._host)
+                errors["base"] = "unknown"
+
+            if not errors:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        client = ImmichApiClient(self._host, self._api_key, session)
+                        albums = await client.get_albums()
+                        self._available_albums = {**ALBUM_VIRTUAL}
+                        for a in albums:
+                            self._available_albums[a.id] = a.name
+                except Exception:
+                    self._available_albums = {**ALBUM_VIRTUAL}
+
                 await self.async_set_unique_id(self._host)
                 self._abort_if_unique_id_configured()
                 return await self.async_step_album()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({
-                vol.Required(CONF_HOST, default="http://192.168.1.100:2283"): str,
-                vol.Required(CONF_API_KEY): str,
-            }),
+            data_schema=STEP_USER_DATA_SCHEMA,
+            description_placeholders={"default_host": "http://192.168.1.100:2283"},
             errors=errors,
         )
 
-    async def async_step_album(self, user_input=None):
+    async def async_step_album(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             selected = user_input.get(CONF_ALBUMS, [ALBUM_ID_FAVORITES])
             return self.async_create_entry(
@@ -120,15 +134,14 @@ class ImmichPhotosOptionsFlow(config_entries.OptionsFlow):
         self._config_entry = config_entry
         self._available_albums: dict[str, str] = {}
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             return self.async_create_entry(title="", data={CONF_ALBUMS: user_input.get(CONF_ALBUMS, [])})
 
         host = self._config_entry.data[CONF_HOST]
         api_key = self._config_entry.data[CONF_API_KEY]
         try:
-            connector = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as session:
+            async with aiohttp.ClientSession() as session:
                 client = ImmichApiClient(host, api_key, session)
                 albums = await client.get_albums()
                 self._available_albums = {**ALBUM_VIRTUAL}
