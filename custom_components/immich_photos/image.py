@@ -1,16 +1,15 @@
 """Image entities for Immich Photos."""
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 import logging
 import random
 
 from homeassistant.components.image import ImageEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_ALBUMS, DOMAIN
 from .hub import ImmichHub
@@ -47,14 +46,6 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
-    config_entry.async_on_unload(
-        config_entry.add_update_listener(_update_listener)
-    )
-
-
-async def _update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(config_entry.entry_id)
-
 
 class ImmichImageBase(ImageEntity):
     """Base image entity for Immich Photos."""
@@ -66,21 +57,22 @@ class ImmichImageBase(ImageEntity):
         super().__init__(hass=hass, verify_ssl=True)
         self.hub = hub
         self._pool: list[str] = []
-        self._pool_updated: datetime | None = None
+        self._pool_updated: object = None
         self._current_bytes: bytes | None = None
         self._attr_extra_state_attributes: dict = {}
 
-    async def _fetch_pool(self) -> list[str]:
+    async def _fetch_pool(self) -> list[dict]:
         raise NotImplementedError
 
     async def _ensure_pool(self) -> None:
+        now = dt_util.utcnow()
         if (
-            not self._pool_updated
-            or (datetime.now() - self._pool_updated) > _POOL_REFRESH_INTERVAL
+            self._pool_updated is None
+            or (now - self._pool_updated) > _POOL_REFRESH_INTERVAL
         ):
             assets = await self._fetch_pool()
             self._pool = [a["id"] for a in assets]
-            self._pool_updated = datetime.now()
+            self._pool_updated = now
             _LOGGER.debug("%s: pool refreshed with %d assets", self.name, len(self._pool))
 
     async def async_update(self) -> None:
@@ -101,7 +93,7 @@ class ImmichImageBase(ImageEntity):
         data = await self.hub.get_asset_thumbnail(asset_id)
         if data:
             self._current_bytes = data
-            self._attr_image_last_updated = datetime.now()
+            self._attr_image_last_updated = dt_util.utcnow()
             self._attr_extra_state_attributes["asset_id"] = asset_id
             self.async_write_ha_state()
 

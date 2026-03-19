@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
-from url_normalize import url_normalize
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -25,10 +24,21 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
 })
 
 
+def _normalize_url(url: str) -> str:
+    """Ensure URL has a scheme and is normalised."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    parsed = urlparse(url)
+    # Remove trailing slash from path
+    path = parsed.path.rstrip("/")
+    return urlunparse(parsed._replace(path=path))
+
+
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate credentials and return title + normalized data."""
-    url = url_normalize(data[CONF_HOST])
-    api_key = data[CONF_API_KEY]
+    """Validate credentials and return title + normalised data."""
+    url = _normalize_url(data[CONF_HOST])
+    api_key = data[CONF_API_KEY].strip()
     hub = ImmichHub(host=url, api_key=api_key)
     if not await hub.authenticate():
         raise InvalidAuth
