@@ -1,4 +1,4 @@
-# Immich Photos — Home Assistant Integration
+# Immich Photos — Home Assistant Integration (WIP)
 
 A feature-rich Home Assistant custom integration for [Immich](https://immich.app), heavily inspired by [ha-google-photos](https://github.com/Daanoz/ha-google-photos).
 
