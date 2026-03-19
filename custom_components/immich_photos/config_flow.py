@@ -4,12 +4,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ImmichApiClient, ImmichConnectionError, ImmichAuthError
 from .const import (
@@ -52,13 +51,13 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._api_key = user_input[CONF_API_KEY]
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    client = ImmichApiClient(self._host, self._api_key, session)
-                    await client.validate()
-                    albums = await client.get_albums()
-                    self._available_albums = {**ALBUM_VIRTUAL}
-                    for a in albums:
-                        self._available_albums[a.id] = a.name
+                session = async_get_clientsession(self.hass, verify_ssl=False)
+                client = ImmichApiClient(self._host, self._api_key, session)
+                await client.validate()
+                albums = await client.get_albums()
+                self._available_albums = {**ALBUM_VIRTUAL}
+                for a in albums:
+                    self._available_albums[a.id] = a.name
             except ImmichAuthError:
                 errors["base"] = "invalid_auth"
             except ImmichConnectionError:
@@ -119,12 +118,12 @@ class ImmichPhotosOptionsFlow(config_entries.OptionsFlow):
         host = self._config_entry.data[CONF_HOST]
         api_key = self._config_entry.data[CONF_API_KEY]
         try:
-            async with aiohttp.ClientSession() as session:
-                client = ImmichApiClient(host, api_key, session)
-                albums = await client.get_albums()
-                self._available_albums = {**ALBUM_VIRTUAL}
-                for a in albums:
-                    self._available_albums[a.id] = a.name
+            session = async_get_clientsession(self.hass, verify_ssl=False)
+            client = ImmichApiClient(host, api_key, session)
+            albums = await client.get_albums()
+            self._available_albums = {**ALBUM_VIRTUAL}
+            for a in albums:
+                self._available_albums[a.id] = a.name
         except Exception:
             self._available_albums = {**ALBUM_VIRTUAL}
 

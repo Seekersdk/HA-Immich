@@ -78,21 +78,57 @@ class ImmichApiClient:
         }
 
     async def validate(self) -> bool:
-        """Validate the connection and API key."""
-        try:
-            async with self._session.get(
-                f"{self._host}/api/users/me",
-                headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 401:
-                    raise ImmichAuthError("Invalid API key")
-                resp.raise_for_status()
-                return True
-        except ImmichAuthError:
-            raise
-        except Exception as err:
-            raise ImmichConnectionError(f"Cannot connect: {err}") from err
+        """Validate the connection and API key.
+
+        Tries multiple endpoints to support different Immich versions.
+        """
+        # Try ping first (no auth needed) to verify connectivity
+        for ping_path in ("/api/server/ping", "/api/server-info/ping"):
+            try:
+                async with self._session.get(
+                    f"{self._host}{ping_path}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    ssl=False,
+                ) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                continue
+        else:
+            # Neither ping endpoint worked — try auth endpoint directly
+            pass
+
+        # Now validate the API key
+        for auth_path in ("/api/users/me", "/api/user/me", "/api/auth/validateToken"):
+            try:
+                async with self._session.get(
+                    f"{self._host}{auth_path}",
+                    headers=self._headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    ssl=False,
+                ) as resp:
+                    if resp.status == 401:
+                        raise ImmichAuthError("Invalid API key")
+                    if resp.status == 200:
+                        return True
+                    if resp.status == 405:
+                        # Method not allowed — try POST for validateToken
+                        async with self._session.post(
+                            f"{self._host}/api/auth/validateToken",
+                            headers=self._headers,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                            ssl=False,
+                        ) as post_resp:
+                            if post_resp.status == 401:
+                                raise ImmichAuthError("Invalid API key")
+                            if post_resp.status == 200:
+                                return True
+            except ImmichAuthError:
+                raise
+            except Exception:
+                continue
+
+        raise ImmichConnectionError(f"Cannot connect to Immich at {self._host}")
 
     async def get_albums(self) -> list[ImmichAlbum]:
         """Get all albums for the current user."""
@@ -101,6 +137,7 @@ class ImmichApiClient:
                 f"{self._host}/api/albums",
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=15),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -116,6 +153,7 @@ class ImmichApiClient:
                 f"{self._host}/api/albums/{album_id}?withoutAssets=false",
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -153,13 +191,12 @@ class ImmichApiClient:
                 headers=self._headers,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=15),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
-                # searchRandom returns a list directly
                 if isinstance(data, list):
                     return [ImmichAsset(a) for a in data]
-                # Some versions return {"assets": {"items": [...]}}
                 items = data.get("assets", {}).get("items", []) if isinstance(data, dict) else []
                 return [ImmichAsset(a) for a in items]
         except Exception as err:
@@ -199,6 +236,7 @@ class ImmichApiClient:
                 headers=self._headers,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -217,6 +255,7 @@ class ImmichApiClient:
                 params={"size": size},
                 headers={**self._headers, "Accept": "image/jpeg,image/webp,image/*"},
                 timeout=aiohttp.ClientTimeout(total=30),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 return await resp.read()
@@ -231,6 +270,7 @@ class ImmichApiClient:
                 f"{self._host}/api/assets/{asset_id}/original",
                 headers={**self._headers, "Accept": "image/*"},
                 timeout=aiohttp.ClientTimeout(total=60),
+                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 return await resp.read()
