@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -21,6 +21,14 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_host(host: str) -> str:
+    """Ensure host has a scheme and no trailing slash."""
+    host = host.strip()
+    if not host.startswith(("http://", "https://")):
+        host = "http://" + host
+    return host.rstrip("/")
 
 
 def _multi_select_validator(options: dict):
@@ -47,24 +55,25 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._host = user_input[CONF_HOST].rstrip("/")
-            self._api_key = user_input[CONF_API_KEY]
+            self._host = _normalize_host(user_input[CONF_HOST])
+            self._api_key = user_input[CONF_API_KEY].strip()
 
             try:
-                session = async_get_clientsession(self.hass, verify_ssl=False)
-                client = ImmichApiClient(self._host, self._api_key, session)
-                await client.validate()
-                albums = await client.get_albums()
-                self._available_albums = {**ALBUM_VIRTUAL}
-                for a in albums:
-                    self._available_albums[a.id] = a.name
+                connector = aiohttp.TCPConnector(ssl=False)
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    client = ImmichApiClient(self._host, self._api_key, session)
+                    await client.validate()
+                    albums = await client.get_albums()
+                    self._available_albums = {**ALBUM_VIRTUAL}
+                    for a in albums:
+                        self._available_albums[a.id] = a.name
             except ImmichAuthError:
                 errors["base"] = "invalid_auth"
             except ImmichConnectionError:
                 errors["base"] = "cannot_connect"
             except Exception:
-                _LOGGER.exception("Unexpected error connecting to Immich")
-                errors["base"] = "unknown"
+                _LOGGER.exception("Unexpected error connecting to Immich at %s", self._host)
+                errors["base"] = "cannot_connect"
             else:
                 await self.async_set_unique_id(self._host)
                 self._abort_if_unique_id_configured()
@@ -118,12 +127,13 @@ class ImmichPhotosOptionsFlow(config_entries.OptionsFlow):
         host = self._config_entry.data[CONF_HOST]
         api_key = self._config_entry.data[CONF_API_KEY]
         try:
-            session = async_get_clientsession(self.hass, verify_ssl=False)
-            client = ImmichApiClient(host, api_key, session)
-            albums = await client.get_albums()
-            self._available_albums = {**ALBUM_VIRTUAL}
-            for a in albums:
-                self._available_albums[a.id] = a.name
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                client = ImmichApiClient(host, api_key, session)
+                albums = await client.get_albums()
+                self._available_albums = {**ALBUM_VIRTUAL}
+                for a in albums:
+                    self._available_albums[a.id] = a.name
         except Exception:
             self._available_albums = {**ALBUM_VIRTUAL}
 
