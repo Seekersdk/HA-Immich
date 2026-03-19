@@ -1,1 +1,11 @@
-ewogICJkb21haW4iOiAiaW1taWNoX3Bob3RvcyIsCiAgIm5hbWUiOiAiSW1taWNoIFBob3RvcyIsCiAgInZlcnNpb24iOiAiMS4wLjAiLAogICJjb25maWdfZmxvdyI6IHRydWUsCiAgImRvY3VtZW50YXRpb24iOiAiaHR0cHM6Ly9naXRodWIuY29tL1NlZWtlcnNkay9IQS1JbW1pY2giLAogICJyZXF1aXJlbWVudHMiOiBbXSwKICAiZGVwZW5kZW5jaWVzIjogW10sCiAgImNvZGVvd25lcnMiOiBbIkBTZWVrZXJzZGsiXSwKICAiaW90X2NsYXNzIjogImxvY2FsX3BvbGxpbmciCn0K
+{
+  "domain": "immich_photos",
+  "name": "Immich Photos",
+  "codeowners": ["@Seekersdk"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Seekersdk/HA-Immich",
+  "iot_class": "local_polling",
+  "requirements": ["url-normalize==1.4.3"],
+  "version": "1.0.0"
+}

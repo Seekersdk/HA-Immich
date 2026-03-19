@@ -2,34 +2,31 @@
   "config": {
     "step": {
       "user": {
-        "title": "Immich Photos",
-        "description": "Connect your Immich instance to Home Assistant.",
         "data": {
-          "host": "Immich URL (e.g. http://192.168.1.100:2283)",
-          "api_key": "API Key"
+          "host": "[%key:common::config_flow::data::host%]",
+          "api_key": "[%key:common::config_flow::data::api_key%]"
         }
       },
-      "album": {
+      "albums": {
         "title": "Select Albums",
-        "description": "Choose which Immich albums to expose as camera entities.",
+        "description": "Choose which Immich albums to show photos from.",
         "data": {
           "albums": "Albums"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect. Check the URL and API key.",
-      "invalid_auth": "Invalid API key.",
-      "unknown": "Unexpected error."
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "abort": {
-      "already_configured": "This Immich instance is already configured."
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Update albums",
         "data": {
           "albums": "Albums"
         }
