@@ -1,0 +1,94 @@
+next_media:
+  name: Next Media
+  description: >
+    Advance to the next media item for one or more Immich Photo camera entities.
+    The image pool is drawn randomly from the album (or via album order).
+  fields:
+    entity_id:
+      name: Entity
+      description: One or more camera entity IDs from the Immich Photos integration.
+      required: true
+      example: camera.immich_favorites_media
+      selector:
+        entity:
+          integration: immich_photos
+          domain: camera
+          multiple: true
+    mode:
+      name: Mode
+      description: "How to select the next image: Random or Album order."
+      required: false
+      default: Random
+      selector:
+        select:
+          options:
+            - Random
+            - Album order
+
+next_media_all:
+  name: Next Media (All)
+  description: >
+    Advance to the next media item for ALL configured Immich Photo entities at once.
+  fields:
+    mode:
+      name: Mode
+      description: "How to select the next image: Random or Album order."
+      required: false
+      default: Random
+      selector:
+        select:
+          options:
+            - Random
+            - Album order
+
+set_date_filter:
+  name: Set Date Filter
+  description: >
+    Dynamically change the date filter for all Immich Photo entities.
+    Useful for automation — e.g. show only photos from this month,
+    or photos older than a specific date.
+  fields:
+    entity_id:
+      name: Entity
+      description: Camera entity IDs to update the filter on.
+      required: false
+      example: camera.immich_favorites_media
+      selector:
+        entity:
+          integration: immich_photos
+          domain: camera
+          multiple: true
+    filter_mode:
+      name: Filter Mode
+      description: >
+        Which date filter to apply.
+        "None" disables filtering.
+        "After date" requires the `after` field.
+        "Before date" requires the `before` field.
+        "Between dates" requires both `after` and `before`.
+        "This month" and "This year" are computed automatically.
+      required: true
+      default: None
+      selector:
+        select:
+          options:
+            - "None"
+            - "After date"
+            - "Before date"
+            - "Between dates"
+            - "This month"
+            - "This year"
+    after:
+      name: After Date
+      description: Only show photos taken after this date (YYYY-MM-DD or ISO 8601).
+      required: false
+      example: "2023-01-01"
+      selector:
+        text: {}
+    before:
+      name: Before Date
+      description: Only show photos taken before this date (YYYY-MM-DD or ISO 8601).
+      required: false
+      example: "2023-12-31"
+      selector:
+        text: {}
