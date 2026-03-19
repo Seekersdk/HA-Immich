@@ -1,10 +1,8 @@
 """Immich API client."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import random
-from datetime import datetime, date
+from datetime import datetime
 from typing import Any
 
 import aiohttp
@@ -23,24 +21,21 @@ class ImmichAsset:
         self.is_archived: bool = data.get("isArchived", False)
         self.is_trashed: bool = data.get("isTrashed", False)
 
-        # Parse creation date
         raw_date = data.get("fileCreatedAt") or data.get("localDateTime", "")
         try:
             self.created_at: datetime = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             self.created_at = datetime.min
 
-        # EXIF / metadata
         exif = data.get("exifInfo") or {}
-        self.width: int = exif.get("exifImageWidth") or data.get("exifInfo", {}).get("exifImageWidth", 0)
-        self.height: int = exif.get("exifImageHeight") or data.get("exifInfo", {}).get("exifImageHeight", 0)
+        self.width: int = exif.get("exifImageWidth") or 0
+        self.height: int = exif.get("exifImageHeight") or 0
 
     @property
     def is_landscape(self) -> bool:
-        """Return True if the image is landscape (wider than tall)."""
         if self.width > 0 and self.height > 0:
             return self.width > self.height
-        return True  # Assume landscape if unknown
+        return True
 
     @property
     def is_portrait(self) -> bool:
@@ -78,57 +73,27 @@ class ImmichApiClient:
         }
 
     async def validate(self) -> bool:
-        """Validate the connection and API key.
-
-        Tries multiple endpoints to support different Immich versions.
-        """
-        # Try ping first (no auth needed) to verify connectivity
-        for ping_path in ("/api/server/ping", "/api/server-info/ping"):
-            try:
-                async with self._session.get(
-                    f"{self._host}{ping_path}",
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    ssl=False,
-                ) as resp:
-                    if resp.status == 200:
-                        break
-            except Exception:
-                continue
-        else:
-            # Neither ping endpoint worked — try auth endpoint directly
-            pass
-
-        # Now validate the API key
-        for auth_path in ("/api/users/me", "/api/user/me", "/api/auth/validateToken"):
-            try:
-                async with self._session.get(
-                    f"{self._host}{auth_path}",
-                    headers=self._headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    ssl=False,
-                ) as resp:
-                    if resp.status == 401:
-                        raise ImmichAuthError("Invalid API key")
-                    if resp.status == 200:
-                        return True
-                    if resp.status == 405:
-                        # Method not allowed — try POST for validateToken
-                        async with self._session.post(
-                            f"{self._host}/api/auth/validateToken",
-                            headers=self._headers,
-                            timeout=aiohttp.ClientTimeout(total=10),
-                            ssl=False,
-                        ) as post_resp:
-                            if post_resp.status == 401:
-                                raise ImmichAuthError("Invalid API key")
-                            if post_resp.status == 200:
-                                return True
-            except ImmichAuthError:
-                raise
-            except Exception:
-                continue
-
-        raise ImmichConnectionError(f"Cannot connect to Immich at {self._host}")
+        """Validate connection and API key using POST /api/auth/validateToken."""
+        try:
+            async with self._session.post(
+                f"{self._host}/api/auth/validateToken",
+                headers=self._headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 401:
+                    raise ImmichAuthError("Invalid API key")
+                if resp.status != 200:
+                    raise ImmichConnectionError(f"Unexpected status {resp.status}")
+                data = await resp.json()
+                if not data.get("authStatus"):
+                    raise ImmichAuthError("Authentication failed")
+                return True
+        except (ImmichAuthError, ImmichConnectionError):
+            raise
+        except aiohttp.ClientError as err:
+            raise ImmichConnectionError(f"Cannot connect to Immich at {self._host}: {err}") from err
+        except Exception as err:
+            raise ImmichConnectionError(f"Unexpected error: {err}") from err
 
     async def get_albums(self) -> list[ImmichAlbum]:
         """Get all albums for the current user."""
@@ -137,7 +102,6 @@ class ImmichApiClient:
                 f"{self._host}/api/albums",
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=15),
-                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -153,7 +117,6 @@ class ImmichApiClient:
                 f"{self._host}/api/albums/{album_id}?withoutAssets=false",
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(total=30),
-                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -164,43 +127,6 @@ class ImmichApiClient:
                 ]
         except Exception as err:
             _LOGGER.error("Error fetching album assets for %s: %s", album_id, err)
-            return []
-
-    async def search_random(
-        self,
-        count: int = 10,
-        is_favorite: bool | None = None,
-        album_id: str | None = None,
-        after: datetime | None = None,
-        before: datetime | None = None,
-    ) -> list[ImmichAsset]:
-        """Get random images using the searchRandom endpoint."""
-        body: dict[str, Any] = {"count": count, "type": "IMAGE", "isArchived": False, "isTrashed": False}
-        if is_favorite is not None:
-            body["isFavorite"] = is_favorite
-        if album_id:
-            body["albumId"] = album_id
-        if after:
-            body["takenAfter"] = after.isoformat()
-        if before:
-            body["takenBefore"] = before.isoformat()
-
-        try:
-            async with self._session.post(
-                f"{self._host}/api/search/random",
-                headers=self._headers,
-                json=body,
-                timeout=aiohttp.ClientTimeout(total=15),
-                ssl=False,
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                if isinstance(data, list):
-                    return [ImmichAsset(a) for a in data]
-                items = data.get("assets", {}).get("items", []) if isinstance(data, dict) else []
-                return [ImmichAsset(a) for a in items]
-        except Exception as err:
-            _LOGGER.error("Error in searchRandom: %s", err)
             return []
 
     async def search_metadata(
@@ -236,7 +162,6 @@ class ImmichApiClient:
                 headers=self._headers,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=30),
-                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -247,15 +172,50 @@ class ImmichApiClient:
             _LOGGER.error("Error in searchMetadata: %s", err)
             return [], 0
 
+    async def search_random(
+        self,
+        count: int = 10,
+        is_favorite: bool | None = None,
+        album_id: str | None = None,
+        after: datetime | None = None,
+        before: datetime | None = None,
+    ) -> list[ImmichAsset]:
+        """Get random images using the searchRandom endpoint."""
+        body: dict[str, Any] = {"count": count, "type": "IMAGE", "isArchived": False, "isTrashed": False}
+        if is_favorite is not None:
+            body["isFavorite"] = is_favorite
+        if album_id:
+            body["albumId"] = album_id
+        if after:
+            body["takenAfter"] = after.isoformat()
+        if before:
+            body["takenBefore"] = before.isoformat()
+
+        try:
+            async with self._session.post(
+                f"{self._host}/api/search/random",
+                headers=self._headers,
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                if isinstance(data, list):
+                    return [ImmichAsset(a) for a in data]
+                items = data.get("assets", {}).get("items", []) if isinstance(data, dict) else []
+                return [ImmichAsset(a) for a in items]
+        except Exception as err:
+            _LOGGER.error("Error in searchRandom: %s", err)
+            return []
+
     async def get_asset_thumbnail(self, asset_id: str, size: str = "thumbnail") -> bytes | None:
-        """Download a thumbnail/preview for an asset. size: thumbnail | preview"""
+        """Download a thumbnail/preview for an asset."""
         try:
             async with self._session.get(
                 f"{self._host}/api/assets/{asset_id}/thumbnail",
                 params={"size": size},
                 headers={**self._headers, "Accept": "image/jpeg,image/webp,image/*"},
                 timeout=aiohttp.ClientTimeout(total=30),
-                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 return await resp.read()
@@ -270,7 +230,6 @@ class ImmichApiClient:
                 f"{self._host}/api/assets/{asset_id}/original",
                 headers={**self._headers, "Accept": "image/*"},
                 timeout=aiohttp.ClientTimeout(total=60),
-                ssl=False,
             ) as resp:
                 resp.raise_for_status()
                 return await resp.read()
