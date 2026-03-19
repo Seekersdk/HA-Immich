@@ -21,7 +21,7 @@ A feature-rich Home Assistant custom integration for [Immich](https://immich.app
 ### Via HACS (recommended)
 
 1. In HACS, go to **Integrations → Custom repositories**
-2. Add: `https://github.com/yourusername/immich-ha` as type **Integration**
+2. Add: `https://github.com/Seekersdk/HA-Immich` as type **Integration**
 3. Find **Immich Photos** and click **Install**
 4. Restart Home Assistant
 
