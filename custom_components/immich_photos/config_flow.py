@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.core import callback
 
 from .api import ImmichApiClient, ImmichConnectionError, ImmichAuthError
 from .const import (
@@ -34,13 +34,6 @@ def _normalize_host(host: str) -> str:
     if not host.startswith(("http://", "https://")):
         host = "http://" + host
     return host.rstrip("/")
-
-
-async def _validate_input(host: str, api_key: str) -> None:
-    """Validate credentials. Raises ImmichAuthError or ImmichConnectionError."""
-    async with aiohttp.ClientSession() as session:
-        client = ImmichApiClient(host, api_key, session)
-        await client.validate()
 
 
 def _multi_select_validator(options: dict):
@@ -70,14 +63,26 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._host = _normalize_host(user_input[CONF_HOST])
             self._api_key = user_input[CONF_API_KEY].strip()
 
+            _LOGGER.warning("[ImmichPhotos] Attempting connection to: %s", self._host)
+
             try:
-                await _validate_input(self._host, self._api_key)
-            except ImmichAuthError:
+                async with aiohttp.ClientSession() as session:
+                    client = ImmichApiClient(self._host, self._api_key, session)
+                    await client.validate()
+                _LOGGER.warning("[ImmichPhotos] Connection successful")
+            except ImmichAuthError as err:
+                _LOGGER.warning("[ImmichPhotos] Auth error: %s", err)
                 errors["base"] = "invalid_auth"
-            except ImmichConnectionError:
+            except ImmichConnectionError as err:
+                _LOGGER.warning("[ImmichPhotos] Connection error: %s", err)
                 errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error connecting to %s", self._host)
+            except Exception as err:
+                _LOGGER.warning(
+                    "[ImmichPhotos] Unexpected error: %s | type: %s | trace: %s",
+                    err,
+                    type(err).__name__,
+                    traceback.format_exc(),
+                )
                 errors["base"] = "unknown"
 
             if not errors:
@@ -88,7 +93,8 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._available_albums = {**ALBUM_VIRTUAL}
                         for a in albums:
                             self._available_albums[a.id] = a.name
-                except Exception:
+                except Exception as err:
+                    _LOGGER.warning("[ImmichPhotos] Could not fetch albums: %s", err)
                     self._available_albums = {**ALBUM_VIRTUAL}
 
                 await self.async_set_unique_id(self._host)
@@ -98,7 +104,6 @@ class ImmichPhotosConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
-            description_placeholders={"default_host": "http://192.168.1.100:2283"},
             errors=errors,
         )
 
