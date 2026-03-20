@@ -13,7 +13,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_WATCHED_ALBUMS
+from .const import (
+    DOMAIN,
+    CONF_WATCHED_ALBUMS,
+    CROP_MODE_ORIGINAL,
+    CROP_MODE_CROP,
+    CROP_MODE_COMBINE,
+    SELECTION_MODE_ORDER,
+    UPDATE_INTERVAL_MAP,
+    DEFAULT_UPDATE_INTERVAL,
+)
 from .hub import ImmichHub
 
 try:
@@ -22,10 +31,11 @@ try:
 except ImportError:
     HAS_PIL = False
 
-SCAN_INTERVAL = timedelta(minutes=5)
-_ID_LIST_REFRESH_INTERVAL = timedelta(hours=12)
+# Poll every 30s — actual image change governed by selected interval
+SCAN_INTERVAL = timedelta(seconds=30)
+_POOL_REFRESH_INTERVAL = timedelta(hours=12)
+_MAX_COMBINE_ATTEMPTS = 5
 _LOGGER = logging.getLogger(__name__)
-_MAX_LANDSCAPE_ATTEMPTS = 5
 
 
 async def async_setup_entry(
@@ -33,24 +43,37 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    hub = ImmichHub(
-        host=config_entry.data[CONF_HOST], api_key=config_entry.data[CONF_API_KEY]
-    )
-    async_add_entities([ImmichImageFavorite(hass, hub)])
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    hub: ImmichHub = data["hub"]
+    entry_state = data["state"]
+
+    entities: list[BaseImmichImage] = [ImmichImageFavorite(hass, hub, entry_state)]
+
     watched_albums = config_entry.options.get(CONF_WATCHED_ALBUMS, [])
-    async_add_entities(
-        [
-            ImmichImageAlbum(hass, hub, album_id=album["id"], album_name=album["albumName"])
-            for album in await hub.list_all_albums()
+    try:
+        all_albums = await hub.list_all_albums()
+        entities += [
+            ImmichImageAlbum(hass, hub, entry_state, album["id"], album["albumName"])
+            for album in all_albums
             if album["id"] in watched_albums
         ]
-    )
+    except Exception:
+        pass
+
+    # Register entities so select entities can trigger refresh
+    data["image_entities"] = entities
+
+    async_add_entities(entities)
     config_entry.async_on_unload(config_entry.add_update_listener(update_listener))
 
 
 async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(config_entry.entry_id)
 
+
+# ---------------------------------------------------------------------------
+# Image processing helpers
+# ---------------------------------------------------------------------------
 
 def _open_with_exif(img_bytes: bytes) -> "PilImage.Image":
     """Open image and apply EXIF rotation so dimensions are correct."""
@@ -59,141 +82,182 @@ def _open_with_exif(img_bytes: bytes) -> "PilImage.Image":
 
 
 def _is_landscape(img_bytes: bytes) -> bool:
-    """Return True if image is wider than tall (after EXIF rotation)."""
     img = _open_with_exif(img_bytes)
     return img.width > img.height
 
 
 def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
-    """Stack two landscape images vertically, scaled to same width."""
+    """Stack two landscape images vertically at same width."""
     img1 = _open_with_exif(img1_bytes).convert("RGB")
     img2 = _open_with_exif(img2_bytes).convert("RGB")
 
-    target_width = max(img1.width, img2.width)
+    w = max(img1.width, img2.width)
+    if img1.width != w:
+        img1 = img1.resize((w, int(img1.height * w / img1.width)), PilImage.LANCZOS)
+    if img2.width != w:
+        img2 = img2.resize((w, int(img2.height * w / img2.width)), PilImage.LANCZOS)
 
-    if img1.width != target_width:
-        ratio = target_width / img1.width
-        img1 = img1.resize((target_width, int(img1.height * ratio)), PilImage.LANCZOS)
-    if img2.width != target_width:
-        ratio = target_width / img2.width
-        img2 = img2.resize((target_width, int(img2.height * ratio)), PilImage.LANCZOS)
-
-    combined = PilImage.new("RGB", (target_width, img1.height + img2.height))
+    combined = PilImage.new("RGB", (w, img1.height + img2.height))
     combined.paste(img1, (0, 0))
     combined.paste(img2, (0, img1.height))
 
-    output = io.BytesIO()
-    combined.save(output, format="JPEG", quality=85)
-    return output.getvalue()
+    out = io.BytesIO()
+    combined.save(out, format="JPEG", quality=85)
+    return out.getvalue()
 
+
+def _center_crop_to_portrait(img_bytes: bytes) -> bytes:
+    """Center-crop a landscape image to 3:4 portrait ratio."""
+    img = _open_with_exif(img_bytes).convert("RGB")
+    if img.height >= img.width:
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=85)
+        return out.getvalue()
+
+    target_w = int(img.height * 3 / 4)
+    left = (img.width - target_w) // 2
+    img = img.crop((left, 0, left + target_w, img.height))
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=85)
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Base entity
+# ---------------------------------------------------------------------------
 
 class BaseImmichImage(ImageEntity):
     _attr_has_entity_name = True
     _attr_should_poll = True
-    _current_image_bytes: bytes | None = None
-    _cached_available_asset_ids: list[str] | None = None
-    _available_asset_ids_last_updated = None
 
-    def __init__(self, hass: HomeAssistant, hub: ImmichHub) -> None:
+    def __init__(self, hass: HomeAssistant, hub: ImmichHub, entry_state) -> None:
         super().__init__(hass=hass, verify_ssl=True)
         self.hub = hub
         self.hass = hass
-        self._attr_extra_state_attributes = {}
+        self._entry_state = entry_state
+        self._current_image_bytes: bytes | None = None
+        self._cached_asset_ids: list[str] | None = None
+        self._pool_updated = None
+        self._pool_index: int = 0
+        self._last_image_load = None
+        self._attr_extra_state_attributes: dict = {}
 
     async def async_update(self) -> None:
-        await self._load_next_image()
+        interval = UPDATE_INTERVAL_MAP.get(
+            self._entry_state.update_interval,
+            UPDATE_INTERVAL_MAP[DEFAULT_UPDATE_INTERVAL],
+        )
+        now = dt_util.utcnow()
+        if (
+            self._last_image_load is None
+            or (now - self._last_image_load).total_seconds() >= interval
+        ):
+            await self._load_next_image()
 
     async def async_image(self) -> bytes | None:
         if not self._current_image_bytes:
             await self._load_next_image()
         return self._current_image_bytes
 
-    async def _refresh_available_asset_ids(self) -> list[str] | None:
+    async def _refresh_pool(self) -> list[str] | None:
         raise NotImplementedError
 
-    async def _get_next_asset_id(self, exclude: str | None = None) -> str | None:
+    async def _ensure_pool(self) -> None:
         now = dt_util.utcnow()
         if (
-            not self._available_asset_ids_last_updated
-            or (now - self._available_asset_ids_last_updated) > _ID_LIST_REFRESH_INTERVAL
+            self._pool_updated is None
+            or (now - self._pool_updated) > _POOL_REFRESH_INTERVAL
         ):
-            _LOGGER.debug("%s: refreshing asset pool", self.name)
-            self._cached_available_asset_ids = await self._refresh_available_asset_ids()
-            self._available_asset_ids_last_updated = now
+            self._cached_asset_ids = await self._refresh_pool()
+            self._pool_updated = now
+            self._pool_index = 0
+            _LOGGER.debug("%s: pool refreshed (%d assets)", self.name, len(self._cached_asset_ids or []))
 
-        if not self._cached_available_asset_ids:
-            _LOGGER.warning("%s: no assets in pool", self.name)
+    def _pick_next(self, exclude: str | None = None) -> str | None:
+        """Pick next asset ID based on selection mode."""
+        pool = self._cached_asset_ids
+        if not pool:
             return None
 
-        pool = self._cached_available_asset_ids
-        if exclude and len(pool) > 1:
-            pool = [a for a in pool if a != exclude]
+        if self._entry_state.selection_mode == SELECTION_MODE_ORDER:
+            idx = self._pool_index % len(pool)
+            self._pool_index += 1
+            return pool[idx]
+        else:
+            candidates = [a for a in pool if a != exclude] if exclude and len(pool) > 1 else pool
+            return random.choice(candidates)
 
-        return random.choice(pool)
+    def _pick_random(self, exclude: str | None = None) -> str | None:
+        """Always pick randomly — used for combine partner."""
+        pool = self._cached_asset_ids
+        if not pool:
+            return None
+        candidates = [a for a in pool if a != exclude] if exclude and len(pool) > 1 else pool
+        return random.choice(candidates)
 
     async def _load_next_image(self) -> None:
-        asset_id = await self._get_next_asset_id()
+        await self._ensure_pool()
+
+        asset_id = self._pick_next()
         if not asset_id:
+            _LOGGER.warning("%s: no assets in pool", self.name)
             return
 
         img_bytes = await self.hub.get_thumbnail(asset_id)
         if not img_bytes:
             return
 
-        # If landscape: try up to 5 times to find a second landscape image to stack
+        crop_mode = self._entry_state.crop_mode
+
         if HAS_PIL:
             try:
-                if _is_landscape(img_bytes):
-                    _LOGGER.debug("%s: landscape detected, searching for second", self.name)
-                    combined = False
-                    for attempt in range(_MAX_LANDSCAPE_ATTEMPTS):
-                        second_id = await self._get_next_asset_id(exclude=asset_id)
-                        if not second_id:
-                            break
-                        second_bytes = await self.hub.get_thumbnail(second_id)
-                        if second_bytes and _is_landscape(second_bytes):
-                            img_bytes = _stack_vertically(img_bytes, second_bytes)
-                            _LOGGER.debug(
-                                "%s: stacked two landscape images (attempt %d)",
-                                self.name, attempt + 1
-                            )
-                            combined = True
-                            break
-                    if not combined:
-                        _LOGGER.debug("%s: no second landscape found, showing single", self.name)
+                if crop_mode == CROP_MODE_COMBINE and _is_landscape(img_bytes):
+                    img_bytes = await self._combine_landscape(img_bytes, asset_id)
+                elif crop_mode == CROP_MODE_CROP:
+                    img_bytes = _center_crop_to_portrait(img_bytes)
+                # CROP_MODE_ORIGINAL: serve as-is
             except Exception as err:
-                _LOGGER.warning("%s: combine failed, using single image: %s", self.name, err)
+                _LOGGER.warning("%s: image processing failed: %s", self.name, err)
 
         asset_info = await self.hub.get_asset_info(asset_id)
         if asset_info:
-            self._attr_extra_state_attributes["media_filename"] = (
-                asset_info.get("originalFileName") or ""
-            )
-            self._attr_extra_state_attributes["media_localdatetime"] = (
-                asset_info.get("localDateTime") or ""
-            )
+            self._attr_extra_state_attributes["media_filename"] = asset_info.get("originalFileName") or ""
+            self._attr_extra_state_attributes["media_localdatetime"] = asset_info.get("localDateTime") or ""
 
         self._current_image_bytes = img_bytes
+        self._last_image_load = dt_util.utcnow()
         self._attr_image_last_updated = dt_util.utcnow()
         self.async_write_ha_state()
+
+    async def _combine_landscape(self, first_bytes: bytes, first_id: str) -> bytes:
+        """Try to find a second landscape image and stack vertically."""
+        for attempt in range(_MAX_COMBINE_ATTEMPTS):
+            second_id = self._pick_random(exclude=first_id)
+            if not second_id:
+                break
+            second_bytes = await self.hub.get_thumbnail(second_id)
+            if second_bytes and _is_landscape(second_bytes):
+                _LOGGER.debug("%s: combining landscape images (attempt %d)", self.name, attempt + 1)
+                return _stack_vertically(first_bytes, second_bytes)
+        _LOGGER.debug("%s: no second landscape found, showing single", self.name)
+        return first_bytes
 
 
 class ImmichImageFavorite(BaseImmichImage):
     _attr_unique_id = "immich_frame_favorite_image"
     _attr_name = "Immich Frame: Random favorite image"
 
-    async def _refresh_available_asset_ids(self) -> list[str] | None:
-        return [image["id"] for image in await self.hub.list_favorite_images()]
+    async def _refresh_pool(self) -> list[str]:
+        return [img["id"] for img in await self.hub.list_favorite_images()]
 
 
 class ImmichImageAlbum(BaseImmichImage):
-    def __init__(self, hass, hub, album_id, album_name):
-        super().__init__(hass, hub)
+    def __init__(self, hass, hub, entry_state, album_id: str, album_name: str):
+        super().__init__(hass, hub, entry_state)
         self._album_id = album_id
         self._attr_unique_id = f"immich_frame_{album_id}"
         self._attr_name = f"Immich Frame: {album_name}"
 
-    async def _refresh_available_asset_ids(self) -> list[str] | None:
-        return [
-            image["id"] for image in await self.hub.list_album_images(self._album_id)
-        ]
+    async def _refresh_pool(self) -> list[str]:
+        return [img["id"] for img in await self.hub.list_album_images(self._album_id)]

@@ -5,19 +5,40 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_API_KEY, CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    DEFAULT_CROP_MODE,
+    DEFAULT_SELECTION_MODE,
+    DEFAULT_UPDATE_INTERVAL,
+)
 from .hub import ImmichHub, InvalidAuth
 
-PLATFORMS: list[Platform] = [Platform.IMAGE]
+PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.SELECT]
+
+
+class EntryState:
+    """Mutable state shared between image and select entities."""
+
+    def __init__(self) -> None:
+        self.crop_mode: str = DEFAULT_CROP_MODE
+        self.selection_mode: str = DEFAULT_SELECTION_MODE
+        self.update_interval: str = DEFAULT_UPDATE_INTERVAL
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up immich_frame from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+
     hub = ImmichHub(host=entry.data[CONF_HOST], api_key=entry.data[CONF_API_KEY])
     if not await hub.authenticate():
         raise InvalidAuth
-    hass.data[DOMAIN][entry.entry_id] = hub
+
+    hass.data[DOMAIN][entry.entry_id] = {
+        "hub": hub,
+        "state": EntryState(),
+        "image_entities": [],
+    }
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
