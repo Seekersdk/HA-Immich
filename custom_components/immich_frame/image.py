@@ -17,7 +17,7 @@ from .const import CONF_WATCHED_ALBUMS
 from .hub import ImmichHub
 
 try:
-    from PIL import Image as PilImage
+    from PIL import Image as PilImage, ImageOps
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -51,10 +51,22 @@ async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> Non
     await hass.config_entries.async_reload(config_entry.entry_id)
 
 
+def _open_with_exif(img_bytes: bytes) -> "PilImage.Image":
+    """Open image and apply EXIF rotation so dimensions are correct."""
+    img = PilImage.open(io.BytesIO(img_bytes))
+    return ImageOps.exif_transpose(img)
+
+
+def _is_landscape(img_bytes: bytes) -> bool:
+    """Return True if image is wider than tall (after EXIF rotation)."""
+    img = _open_with_exif(img_bytes)
+    return img.width > img.height
+
+
 def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
-    """Stack two images vertically, scaled to same width."""
-    img1 = PilImage.open(io.BytesIO(img1_bytes)).convert("RGB")
-    img2 = PilImage.open(io.BytesIO(img2_bytes)).convert("RGB")
+    """Stack two landscape images vertically, scaled to same width."""
+    img1 = _open_with_exif(img1_bytes).convert("RGB")
+    img2 = _open_with_exif(img2_bytes).convert("RGB")
 
     target_width = max(img1.width, img2.width)
 
@@ -72,12 +84,6 @@ def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
     output = io.BytesIO()
     combined.save(output, format="JPEG", quality=85)
     return output.getvalue()
-
-
-def _is_landscape(img_bytes: bytes) -> bool:
-    """Return True if image is wider than tall."""
-    img = PilImage.open(io.BytesIO(img_bytes))
-    return img.width > img.height
 
 
 class BaseImmichImage(ImageEntity):
@@ -133,16 +139,17 @@ class BaseImmichImage(ImageEntity):
         if not img_bytes:
             return
 
-        # Combine two landscape images vertically into portrait frame
+        # Combine two landscape images vertically so frame stays portrait
         if HAS_PIL:
             try:
                 if _is_landscape(img_bytes):
+                    _LOGGER.debug("%s: landscape detected, looking for second", self.name)
                     second_id = await self._get_next_asset_id(exclude=asset_id)
                     if second_id:
                         second_bytes = await self.hub.get_thumbnail(second_id)
                         if second_bytes and _is_landscape(second_bytes):
                             img_bytes = _stack_vertically(img_bytes, second_bytes)
-                            _LOGGER.debug("%s: combined two landscape images", self.name)
+                            _LOGGER.debug("%s: stacked two landscape images", self.name)
             except Exception as err:
                 _LOGGER.warning("%s: combine failed, using single image: %s", self.name, err)
 
