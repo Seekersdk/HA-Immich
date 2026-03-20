@@ -1,4 +1,4 @@
-# Immich Photos — Home Assistant Integration
+# Immich Frame — Home Assistant Integration
 
 A Home Assistant custom integration for [Immich](https://immich.app) that displays photos from your albums on dashboards and digital photo frames.
 
