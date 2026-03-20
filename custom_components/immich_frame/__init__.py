@@ -14,19 +14,26 @@ from .const import (
 )
 from .hub import ImmichHub, InvalidAuth
 
-PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.SELECT]
+PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.SELECT, Platform.SENSOR]
 
 
 class AlbumState:
-    """Mutable state for a single album — shared between image and select entities."""
+    """Mutable state for a single album — shared between image, select and sensor entities."""
 
     def __init__(self, album_id: str, album_name: str) -> None:
         self.album_id = album_id
         self.album_name = album_name
+        # Select state
         self.crop_mode: str = DEFAULT_CROP_MODE
         self.selection_mode: str = DEFAULT_SELECTION_MODE
         self.update_interval: str = DEFAULT_UPDATE_INTERVAL
+        # Current media metadata (updated by image entity)
+        self.current_filename: str = ""
+        self.current_datetime: str = ""
+        self.pool_count: int = 0
+        # Entity references
         self.image_entities: list = []
+        self.sensor_entities: list = []
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -37,14 +44,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not await hub.authenticate():
         raise InvalidAuth
 
-    # Fetch album names for labelling
     try:
         all_albums = await hub.list_all_albums()
         album_name_map = {a["id"]: a["albumName"] for a in all_albums}
     except Exception:
         album_name_map = {}
 
-    # Always include Favorites; add watched albums from options
     watched = entry.options.get(CONF_WATCHED_ALBUMS, [])
     album_states: dict[str, AlbumState] = {
         "__favorites__": AlbumState("__favorites__", "Favorites")
@@ -59,7 +64,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
@@ -69,7 +73,6 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok

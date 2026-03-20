@@ -50,7 +50,6 @@ async def async_setup_entry(
     entry_id = config_entry.entry_id
 
     entities: list[BaseImmichImage] = []
-
     for album_id, album_state in album_states.items():
         if album_id == "__favorites__":
             entity = ImmichImageFavorite(hass, hub, album_state, entry_id)
@@ -60,6 +59,13 @@ async def async_setup_entry(
         album_state.image_entities.append(entity)
 
     async_add_entities(entities)
+    config_entry.async_on_unload(
+        config_entry.add_update_listener(_update_listener)
+    )
+
+
+async def _update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(config_entry.entry_id)
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +78,7 @@ def _open_with_exif(img_bytes: bytes) -> "PilImage.Image":
 
 
 def _is_landscape(img_bytes: bytes) -> bool:
-    img = _open_with_exif(img_bytes)
-    return img.width > img.height
+    return _open_with_exif(img_bytes).width > _open_with_exif(img_bytes).height
 
 
 def _crop_to_ratio(img: "PilImage.Image", ratio_w: int, ratio_h: int) -> "PilImage.Image":
@@ -83,10 +88,9 @@ def _crop_to_ratio(img: "PilImage.Image", ratio_w: int, ratio_h: int) -> "PilIma
         new_w = int(img.height * target_ratio)
         left = (img.width - new_w) // 2
         return img.crop((left, 0, left + new_w, img.height))
-    else:
-        new_h = int(img.width / target_ratio)
-        top = (img.height - new_h) // 2
-        return img.crop((0, top, img.width, top + new_h))
+    new_h = int(img.width / target_ratio)
+    top = (img.height - new_h) // 2
+    return img.crop((0, top, img.width, top + new_h))
 
 
 def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> "PilImage.Image":
@@ -111,8 +115,7 @@ def _to_portrait_frame(img: "PilImage.Image") -> bytes:
 
 
 def _center_crop_to_portrait(img_bytes: bytes) -> bytes:
-    img = _open_with_exif(img_bytes).convert("RGB")
-    return _to_portrait_frame(img)
+    return _to_portrait_frame(_open_with_exif(img_bytes).convert("RGB"))
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +126,7 @@ class BaseImmichImage(ImageEntity):
     _attr_has_entity_name = True
     _attr_should_poll = True
 
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        hub: ImmichHub,
-        album_state,
-        entry_id: str,
-    ) -> None:
+    def __init__(self, hass, hub, album_state, entry_id) -> None:
         super().__init__(hass=hass, verify_ssl=True)
         self.hub = hub
         self.hass = hass
@@ -146,7 +143,7 @@ class BaseImmichImage(ImageEntity):
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self._entry_id}_{self._album_state.album_id}")},
-            name=f"Immich – {self._album_state.album_name}",
+            name=f"Immich \u2013 {self._album_state.album_name}",
             manufacturer="Immich",
             model="Photo Frame",
             entry_type=DeviceEntryType.SERVICE,
@@ -181,7 +178,10 @@ class BaseImmichImage(ImageEntity):
             self._cached_asset_ids = await self._refresh_pool()
             self._pool_updated = now
             self._pool_index = 0
-            _LOGGER.debug("%s: pool refreshed (%d assets)", self.name, len(self._cached_asset_ids or []))
+            count = len(self._cached_asset_ids or [])
+            self._album_state.pool_count = count
+            _LOGGER.debug("%s: pool refreshed (%d assets)", self.name, count)
+            self._notify_sensors()
 
     def _pick_next(self, exclude: str | None = None) -> str | None:
         pool = self._cached_asset_ids
@@ -201,6 +201,10 @@ class BaseImmichImage(ImageEntity):
         candidates = [a for a in pool if a != exclude] if exclude and len(pool) > 1 else pool
         return random.choice(candidates)
 
+    def _notify_sensors(self) -> None:
+        for sensor in self._album_state.sensor_entities:
+            sensor.async_write_ha_state()
+
     async def _load_next_image(self) -> None:
         await self._ensure_pool()
         asset_id = self._pick_next()
@@ -213,7 +217,6 @@ class BaseImmichImage(ImageEntity):
             return
 
         crop_mode = self._album_state.crop_mode
-
         if HAS_PIL:
             try:
                 if crop_mode == CROP_MODE_COMBINE:
@@ -229,13 +232,18 @@ class BaseImmichImage(ImageEntity):
 
         asset_info = await self.hub.get_asset_info(asset_id)
         if asset_info:
-            self._attr_extra_state_attributes["media_filename"] = asset_info.get("originalFileName") or ""
-            self._attr_extra_state_attributes["media_localdatetime"] = asset_info.get("localDateTime") or ""
+            filename = asset_info.get("originalFileName") or ""
+            taken = asset_info.get("localDateTime") or ""
+            self._attr_extra_state_attributes["media_filename"] = filename
+            self._attr_extra_state_attributes["media_localdatetime"] = taken
+            self._album_state.current_filename = filename
+            self._album_state.current_datetime = taken
 
         self._current_image_bytes = img_bytes
         self._last_image_load = dt_util.utcnow()
         self._attr_image_last_updated = dt_util.utcnow()
         self.async_write_ha_state()
+        self._notify_sensors()
 
     async def _find_and_combine(self, first_bytes: bytes, first_id: str) -> "PilImage.Image":
         for attempt in range(_MAX_COMBINE_ATTEMPTS):
