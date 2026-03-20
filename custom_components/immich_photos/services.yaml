@@ -1,0 +1,41 @@
+next_media:
+  name: Next Media
+  description: >
+    Advance to the next media item for one or more Immich Photo camera entities.
+  fields:
+    entity_id:
+      name: Entity
+      description: One or more camera entity IDs from the Immich Photos integration.
+      required: true
+      example: camera.immich_favorites_media
+      selector:
+        entity:
+          integration: immich_photos
+          domain: camera
+          multiple: true
+    mode:
+      name: Mode
+      description: "How to select the next image: Random or Album order."
+      required: false
+      default: Random
+      selector:
+        select:
+          options:
+            - Random
+            - Album order
+
+next_media_all:
+  name: Next Media (All)
+  description: >
+    Advance to the next media item for ALL configured Immich Photo entities at once.
+  fields:
+    mode:
+      name: Mode
+      description: "How to select the next image: Random or Album order."
+      required: false
+      default: Random
+      selector:
+        select:
+          options:
+            - Random
+            - Album order
