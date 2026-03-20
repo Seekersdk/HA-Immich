@@ -72,12 +72,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    """Immich Frame options flow — config_entry is auto-injected by HA."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -88,12 +87,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         url = url_normalize(self.config_entry.data[CONF_HOST])
         api_key = self.config_entry.data[CONF_API_KEY]
         hub = ImmichHub(host=url, api_key=api_key)
-        if not await hub.authenticate():
-            raise InvalidAuth
 
-        albums = await hub.list_all_albums()
-        album_map = {album["id"]: album["albumName"] for album in albums}
-        current_albums_value = [
+        try:
+            if not await hub.authenticate():
+                raise InvalidAuth
+            albums = await hub.list_all_albums()
+            album_map = {album["id"]: album["albumName"] for album in albums}
+        except Exception:
+            _LOGGER.exception("Failed to load albums for options flow")
+            album_map = {}
+
+        current_albums = [
             album
             for album in self.config_entry.options.get(CONF_WATCHED_ALBUMS, [])
             if album in album_map
@@ -105,7 +109,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 {
                     vol.Required(
                         CONF_WATCHED_ALBUMS,
-                        default=current_albums_value,
+                        default=current_albums,
                     ): cv.multi_select(album_map)
                 }
             ),
