@@ -25,6 +25,7 @@ except ImportError:
 SCAN_INTERVAL = timedelta(minutes=5)
 _ID_LIST_REFRESH_INTERVAL = timedelta(hours=12)
 _LOGGER = logging.getLogger(__name__)
+_MAX_LANDSCAPE_ATTEMPTS = 5
 
 
 async def async_setup_entry(
@@ -139,17 +140,27 @@ class BaseImmichImage(ImageEntity):
         if not img_bytes:
             return
 
-        # Combine two landscape images vertically so frame stays portrait
+        # If landscape: try up to 5 times to find a second landscape image to stack
         if HAS_PIL:
             try:
                 if _is_landscape(img_bytes):
-                    _LOGGER.debug("%s: landscape detected, looking for second", self.name)
-                    second_id = await self._get_next_asset_id(exclude=asset_id)
-                    if second_id:
+                    _LOGGER.debug("%s: landscape detected, searching for second", self.name)
+                    combined = False
+                    for attempt in range(_MAX_LANDSCAPE_ATTEMPTS):
+                        second_id = await self._get_next_asset_id(exclude=asset_id)
+                        if not second_id:
+                            break
                         second_bytes = await self.hub.get_thumbnail(second_id)
                         if second_bytes and _is_landscape(second_bytes):
                             img_bytes = _stack_vertically(img_bytes, second_bytes)
-                            _LOGGER.debug("%s: stacked two landscape images", self.name)
+                            _LOGGER.debug(
+                                "%s: stacked two landscape images (attempt %d)",
+                                self.name, attempt + 1
+                            )
+                            combined = True
+                            break
+                    if not combined:
+                        _LOGGER.debug("%s: no second landscape found, showing single", self.name)
             except Exception as err:
                 _LOGGER.warning("%s: combine failed, using single image: %s", self.name, err)
 
