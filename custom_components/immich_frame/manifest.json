@@ -1,0 +1,12 @@
+{
+  "domain": "immich_frame",
+  "name": "Immich Frame",
+  "codeowners": ["@Seekersdk"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Seekersdk/HA-Immich",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Seekersdk/HA-Immich/issues",
+  "requirements": ["url-normalize==1.4.3"],
+  "version": "1.0.0"
+}
