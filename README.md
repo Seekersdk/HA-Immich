@@ -1,18 +1,20 @@
-# Immich Photos — Home Assistant Integration (WIP)
+# Immich Photos — Home Assistant Integration
 
-A feature-rich Home Assistant custom integration for [Immich](https://immich.app), heavily inspired by [ha-google-photos](https://github.com/Daanoz/ha-google-photos).
+A Home Assistant custom integration for [Immich](https://immich.app) that displays photos from your albums on dashboards and digital photo frames.
+
+---
 
 ## Features
 
-- 📸 **Camera entities** for each album — display photos directly on your dashboards
-- 🔀 **Random selection** from a large pool using Immich's `searchRandom` API
-- 🗓️ **Date filtering** — show only photos after/before a date, this month, this year, or a custom range
-- 🖼️ **Combine Images mode** — automatically merges two portrait photos side-by-side into a landscape frame (same as ha-google-photos)
-- ✂️ **Crop modes** — Original (letterboxed), Crop (fill), or Combine Images
-- ⏱️ **Configurable update interval** — from 1 minute to 1 hour
-- 🏷️ **Sensor entities** — filename, creation timestamp, photo count
-- 🎛️ **Select entities** — change crop mode, selection mode, update interval, and date filter live from the UI
-- 🔧 **Services** — `next_media`, `next_media_all`, `set_date_filter` for use in automations
+- **Camera entities** per album — show photos directly in picture cards and Lovelace dashboards
+- **Random or album-order selection** from a cached asset pool
+- **Combine Images mode** — automatically places two portrait photos above and below each other in a portrait frame
+- **Crop modes** — Original (letterboxed), Crop (fill), or Combine Images
+- **Date filtering** — filter by date range, this month, this year, or a custom range
+- **Configurable update interval** — from 1 minute to 1 hour
+- **Sensor entities** — filename, creation timestamp, and photo count per album
+- **Select entities** — change crop mode, selection mode, update interval, and date filter live from the UI
+- **Services** — `next_media`, `next_media_all`, and `set_date_filter` for use in automations
 
 ---
 
@@ -21,13 +23,13 @@ A feature-rich Home Assistant custom integration for [Immich](https://immich.app
 ### Via HACS (recommended)
 
 1. In HACS, go to **Integrations → Custom repositories**
-2. Add: `https://github.com/Seekersdk/HA-Immich` as type **Integration**
+2. Add `https://github.com/Seekersdk/HA-Immich` as type **Integration**
 3. Find **Immich Photos** and click **Install**
 4. Restart Home Assistant
 
 ### Manual
 
-1. Copy the `custom_components/immich_photos` folder into your HA config's `custom_components/` directory
+1. Copy the `custom_components/immich_photos` folder into your HA `config/custom_components/` directory
 2. Restart Home Assistant
 
 ---
@@ -36,55 +38,61 @@ A feature-rich Home Assistant custom integration for [Immich](https://immich.app
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Immich Photos**
-3. Enter your Immich URL and API key
-   - API key: Immich web → Account Settings → API Keys → New API Key
+3. Enter your Immich URL (e.g. `http://192.168.1.100:2283`) and API key
+   - Get your API key: Immich web → Account Settings → API Keys → New API Key
 4. Select which albums to expose (Favorites, All Photos, or any of your albums)
 
-To add/change albums later, click **Configure** on the integration card.
+To add or change albums later, click **Configure** on the integration card.
 
 ---
 
 ## Entities created per album
 
-| Platform | Name | Description |
+| Platform | Entity | Description |
 |---|---|---|
 | `camera` | `{Album} Media` | Current photo — use in picture-entity or picture cards |
 | `sensor` | `{Album} Filename` | Filename of the current photo |
-| `sensor` | `{Album} Creation Timestamp` | Timestamp the photo was taken |
+| `sensor` | `{Album} Creation Timestamp` | Date and time the photo was taken |
 | `sensor` | `{Album} Media Count` | Number of photos in the pool |
 | `select` | `{Album} Image Selection Mode` | Random or Album order |
-| `select` | `{Album} Crop Mode` | Original / Crop / Combine images |
-| `select` | `{Album} Update Interval` | How often to auto-advance |
-| `select` | `{Album} Date Filter` | Date filtering mode |
+| `select` | `{Album} Crop Mode` | Original / Crop / Combine Images |
+| `select` | `{Album} Update Interval` | How often to auto-advance (1 min – 1 hour) |
+| `select` | `{Album} Date Filter` | Active date filtering mode |
+
+All entities for an album are grouped under a single device in **Settings → Devices & Services**.
 
 ---
 
 ## Crop Modes
 
 ### Original
-Photo is scaled to fit the card's dimensions, preserving aspect ratio (letterboxed). Best for preserving composition.
+Photo is scaled to fit the card's dimensions while preserving the aspect ratio (letterboxed). Best for preserving composition.
 
 ### Crop
-Photo is center-cropped to fill the target size exactly. No letterboxing, but edges may be cut off.
+Photo is center-cropped to fill the target size exactly. No letterboxing, but edges may be trimmed.
 
-### Combine Images ⭐
-This is the killer feature. When the current photo is **portrait** (taller than wide), the integration automatically fetches a *second* portrait photo from the pool and places both **side by side** in a single landscape image.
-
-This results in much less wasted canvas space compared to cropping a single portrait to landscape — exactly the same smart behavior as the ha-google-photos integration.
+### Combine Images
+When the current photo is **portrait** (taller than wide), a second portrait photo is automatically picked from the pool and placed **above and below** in a single portrait frame.
 
 ```
-┌─────────┬─────────┐
-│         │         │
-│ Photo 1 │ Photo 2 │  ← Two portraits → one landscape frame
-│         │         │
-└─────────┴─────────┘
+┌──────────────┐
+│              │
+│   Photo 1    │
+│              │
+├──────────────┤
+│              │
+│   Photo 2    │
+│              │
+└──────────────┘
 ```
+
+This fills a portrait frame with two photos instead of wasting space with a single cropped image — great for photo frame dashboards and screensavers.
 
 ---
 
 ## Date Filtering
 
-You can filter which photos appear in the pool using the **Date Filter** select entity or the `set_date_filter` service:
+Filter the photo pool using the **Date Filter** select entity or the `set_date_filter` service:
 
 | Mode | Description |
 |---|---|
@@ -95,14 +103,14 @@ You can filter which photos appear in the pool using the **Date Filter** select 
 | `This month` | Only photos from the current calendar month |
 | `This year` | Only photos from the current calendar year |
 
-When you change the filter, the photo pool is automatically refreshed from Immich.
+When the filter changes, the photo pool is automatically refreshed from Immich.
 
 ---
 
 ## Services
 
 ### `immich_photos.next_media`
-Advance to the next photo on specific camera entities.
+Advance to the next photo for one or more specific camera entities.
 
 ```yaml
 service: immich_photos.next_media
@@ -121,7 +129,7 @@ data:
 ```
 
 ### `immich_photos.set_date_filter`
-Dynamically change the date filter (great for automations).
+Dynamically change the date filter — great for automations.
 
 ```yaml
 # Show only photos from this summer
@@ -162,7 +170,7 @@ tap_action:
     mode: Random
 ```
 
-### Lovelace Wallpanel (screensaver)
+### Screensaver with lovelace-wallpanel
 Works great with [lovelace-wallpanel](https://github.com/j-a-n/lovelace-wallpanel):
 
 ```yaml
@@ -175,7 +183,7 @@ wallpanel:
   image_url: media-entity://camera.immich_favorites_media
 ```
 
-Set **Crop Mode** to `Combine images` and `image_fit: cover` for best results.
+Set **Crop Mode** to `Combine Images` and `image_fit: cover` for best results.
 
 ### Automation: advance photo every 10 minutes
 ```yaml
@@ -206,6 +214,16 @@ action:
 
 ---
 
+## How It Works
+
+1. On setup, the integration calls Immich's `POST /api/search/metadata` (paginated) to build a local **asset pool** for each album. This pool is cached for **3 hours**.
+2. On each update interval tick (default 5 min), it picks the next image — randomly or in album order.
+3. If **Combine Images** mode is active and the selected photo is portrait, a second portrait photo is picked from the pool and both are composited above and below each other using Pillow.
+4. The resulting JPEG is served to HA's camera platform and displayed on dashboards.
+5. Date filters use Immich's `takenAfter` / `takenBefore` API parameters — only matching assets enter the pool.
+
+---
+
 ## Debugging
 
 Add to `configuration.yaml`:
@@ -219,18 +237,8 @@ logger:
 
 ---
 
-## How It Works
-
-1. On startup, the integration calls `POST /api/search/metadata` (paginated) to build a local **asset pool** for each album. This pool is cached for **3 hours**.
-2. On each update interval tick (default 5 min), it picks the next image from the pool using either **Random** or **Album order** mode.
-3. If **Combine Images** mode is active and the selected photo is portrait, a second portrait photo is picked from the pool and both are composited side-by-side using Pillow.
-4. The resulting JPEG is served to HA's camera platform and displayed on dashboards.
-5. Date filters use Immich's `takenAfter` / `takenBefore` API parameters — only matching assets enter the pool.
-
----
-
 ## Requirements
 
 - Home Assistant 2023.x or newer
-- Immich 1.90+ (needs `POST /api/search/random` and `POST /api/search/metadata`)
+- Immich 1.90+ (requires `POST /api/search/metadata`)
 - Python package: `Pillow>=10.0.0` (auto-installed)
