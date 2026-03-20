@@ -35,6 +35,11 @@ except ImportError:
 SCAN_INTERVAL = timedelta(seconds=30)
 _POOL_REFRESH_INTERVAL = timedelta(hours=12)
 _MAX_COMBINE_ATTEMPTS = 5
+
+# Fixed output portrait ratio for Combine mode (width:height = 3:4)
+_PORTRAIT_W = 3
+_PORTRAIT_H = 4
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -60,9 +65,7 @@ async def async_setup_entry(
     except Exception:
         pass
 
-    # Register entities so select entities can trigger refresh
     data["image_entities"] = entities
-
     async_add_entities(entities)
     config_entry.async_on_unload(config_entry.add_update_listener(update_listener))
 
@@ -86,8 +89,25 @@ def _is_landscape(img_bytes: bytes) -> bool:
     return img.width > img.height
 
 
+def _crop_to_ratio(img: "PilImage.Image", ratio_w: int, ratio_h: int) -> "PilImage.Image":
+    """Center-crop image to fill exact aspect ratio (cover mode)."""
+    target_ratio = ratio_w / ratio_h
+    img_ratio = img.width / img.height
+
+    if img_ratio > target_ratio:
+        # Wider than target — crop left/right
+        new_w = int(img.height * target_ratio)
+        left = (img.width - new_w) // 2
+        return img.crop((left, 0, left + new_w, img.height))
+    else:
+        # Taller than target — crop top/bottom
+        new_h = int(img.width / target_ratio)
+        top = (img.height - new_h) // 2
+        return img.crop((0, top, img.width, top + new_h))
+
+
 def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
-    """Stack two landscape images vertically at same width."""
+    """Stack two images vertically at same width (raw, before portrait crop)."""
     img1 = _open_with_exif(img1_bytes).convert("RGB")
     img2 = _open_with_exif(img2_bytes).convert("RGB")
 
@@ -100,27 +120,21 @@ def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
     combined = PilImage.new("RGB", (w, img1.height + img2.height))
     combined.paste(img1, (0, 0))
     combined.paste(img2, (0, img1.height))
+    return combined
 
+
+def _to_portrait_frame(img: "PilImage.Image") -> bytes:
+    """Crop image to fixed 3:4 portrait frame and return JPEG bytes."""
+    img = _crop_to_ratio(img, _PORTRAIT_W, _PORTRAIT_H)
     out = io.BytesIO()
-    combined.save(out, format="JPEG", quality=85)
+    img.convert("RGB").save(out, format="JPEG", quality=85)
     return out.getvalue()
 
 
 def _center_crop_to_portrait(img_bytes: bytes) -> bytes:
-    """Center-crop a landscape image to 3:4 portrait ratio."""
+    """Crop mode: center-crop to 3:4 portrait."""
     img = _open_with_exif(img_bytes).convert("RGB")
-    if img.height >= img.width:
-        out = io.BytesIO()
-        img.save(out, format="JPEG", quality=85)
-        return out.getvalue()
-
-    target_w = int(img.height * 3 / 4)
-    left = (img.width - target_w) // 2
-    img = img.crop((left, 0, left + target_w, img.height))
-
-    out = io.BytesIO()
-    img.save(out, format="JPEG", quality=85)
-    return out.getvalue()
+    return _to_portrait_frame(img)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +174,7 @@ class BaseImmichImage(ImageEntity):
             await self._load_next_image()
         return self._current_image_bytes
 
-    async def _refresh_pool(self) -> list[str] | None:
+    async def _refresh_pool(self) -> list[str]:
         raise NotImplementedError
 
     async def _ensure_pool(self) -> None:
@@ -175,21 +189,17 @@ class BaseImmichImage(ImageEntity):
             _LOGGER.debug("%s: pool refreshed (%d assets)", self.name, len(self._cached_asset_ids or []))
 
     def _pick_next(self, exclude: str | None = None) -> str | None:
-        """Pick next asset ID based on selection mode."""
         pool = self._cached_asset_ids
         if not pool:
             return None
-
         if self._entry_state.selection_mode == SELECTION_MODE_ORDER:
             idx = self._pool_index % len(pool)
             self._pool_index += 1
             return pool[idx]
-        else:
-            candidates = [a for a in pool if a != exclude] if exclude and len(pool) > 1 else pool
-            return random.choice(candidates)
+        candidates = [a for a in pool if a != exclude] if exclude and len(pool) > 1 else pool
+        return random.choice(candidates)
 
     def _pick_random(self, exclude: str | None = None) -> str | None:
-        """Always pick randomly — used for combine partner."""
         pool = self._cached_asset_ids
         if not pool:
             return None
@@ -212,11 +222,20 @@ class BaseImmichImage(ImageEntity):
 
         if HAS_PIL:
             try:
-                if crop_mode == CROP_MODE_COMBINE and _is_landscape(img_bytes):
-                    img_bytes = await self._combine_landscape(img_bytes, asset_id)
+                if crop_mode == CROP_MODE_COMBINE:
+                    if _is_landscape(img_bytes):
+                        # Try to combine with another landscape
+                        combined_img = await self._find_and_combine(img_bytes, asset_id)
+                    else:
+                        combined_img = _open_with_exif(img_bytes).convert("RGB")
+                    # Always crop to fixed portrait frame
+                    img_bytes = _to_portrait_frame(combined_img)
+
                 elif crop_mode == CROP_MODE_CROP:
                     img_bytes = _center_crop_to_portrait(img_bytes)
+
                 # CROP_MODE_ORIGINAL: serve as-is
+
             except Exception as err:
                 _LOGGER.warning("%s: image processing failed: %s", self.name, err)
 
@@ -230,18 +249,18 @@ class BaseImmichImage(ImageEntity):
         self._attr_image_last_updated = dt_util.utcnow()
         self.async_write_ha_state()
 
-    async def _combine_landscape(self, first_bytes: bytes, first_id: str) -> bytes:
-        """Try to find a second landscape image and stack vertically."""
+    async def _find_and_combine(self, first_bytes: bytes, first_id: str) -> "PilImage.Image":
+        """Try to find second landscape and stack. Returns PIL Image (not yet portrait-cropped)."""
         for attempt in range(_MAX_COMBINE_ATTEMPTS):
             second_id = self._pick_random(exclude=first_id)
             if not second_id:
                 break
             second_bytes = await self.hub.get_thumbnail(second_id)
             if second_bytes and _is_landscape(second_bytes):
-                _LOGGER.debug("%s: combining landscape images (attempt %d)", self.name, attempt + 1)
+                _LOGGER.debug("%s: combining (attempt %d)", self.name, attempt + 1)
                 return _stack_vertically(first_bytes, second_bytes)
-        _LOGGER.debug("%s: no second landscape found, showing single", self.name)
-        return first_bytes
+        _LOGGER.debug("%s: no second landscape, showing single", self.name)
+        return _open_with_exif(first_bytes).convert("RGB")
 
 
 class ImmichImageFavorite(BaseImmichImage):
