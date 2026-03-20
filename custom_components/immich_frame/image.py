@@ -8,14 +8,13 @@ import random
 
 from homeassistant.components.image import ImageEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
-    CONF_WATCHED_ALBUMS,
     CROP_MODE_ORIGINAL,
     CROP_MODE_CROP,
     CROP_MODE_COMBINE,
@@ -31,12 +30,9 @@ try:
 except ImportError:
     HAS_PIL = False
 
-# Poll every 30s — actual image change governed by selected interval
 SCAN_INTERVAL = timedelta(seconds=30)
 _POOL_REFRESH_INTERVAL = timedelta(hours=12)
 _MAX_COMBINE_ATTEMPTS = 5
-
-# Fixed output portrait ratio for Combine mode (width:height = 3:4)
 _PORTRAIT_W = 3
 _PORTRAIT_H = 4
 
@@ -50,36 +46,27 @@ async def async_setup_entry(
 ) -> None:
     data = hass.data[DOMAIN][config_entry.entry_id]
     hub: ImmichHub = data["hub"]
-    entry_state = data["state"]
+    album_states: dict = data["album_states"]
+    entry_id = config_entry.entry_id
 
-    entities: list[BaseImmichImage] = [ImmichImageFavorite(hass, hub, entry_state)]
+    entities: list[BaseImmichImage] = []
 
-    watched_albums = config_entry.options.get(CONF_WATCHED_ALBUMS, [])
-    try:
-        all_albums = await hub.list_all_albums()
-        entities += [
-            ImmichImageAlbum(hass, hub, entry_state, album["id"], album["albumName"])
-            for album in all_albums
-            if album["id"] in watched_albums
-        ]
-    except Exception:
-        pass
+    for album_id, album_state in album_states.items():
+        if album_id == "__favorites__":
+            entity = ImmichImageFavorite(hass, hub, album_state, entry_id)
+        else:
+            entity = ImmichImageAlbum(hass, hub, album_state, entry_id)
+        entities.append(entity)
+        album_state.image_entities.append(entity)
 
-    data["image_entities"] = entities
     async_add_entities(entities)
-    config_entry.async_on_unload(config_entry.add_update_listener(update_listener))
-
-
-async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(config_entry.entry_id)
 
 
 # ---------------------------------------------------------------------------
-# Image processing helpers
+# Image processing
 # ---------------------------------------------------------------------------
 
 def _open_with_exif(img_bytes: bytes) -> "PilImage.Image":
-    """Open image and apply EXIF rotation so dimensions are correct."""
     img = PilImage.open(io.BytesIO(img_bytes))
     return ImageOps.exif_transpose(img)
 
@@ -90,33 +77,26 @@ def _is_landscape(img_bytes: bytes) -> bool:
 
 
 def _crop_to_ratio(img: "PilImage.Image", ratio_w: int, ratio_h: int) -> "PilImage.Image":
-    """Center-crop image to fill exact aspect ratio (cover mode)."""
     target_ratio = ratio_w / ratio_h
     img_ratio = img.width / img.height
-
     if img_ratio > target_ratio:
-        # Wider than target — crop left/right
         new_w = int(img.height * target_ratio)
         left = (img.width - new_w) // 2
         return img.crop((left, 0, left + new_w, img.height))
     else:
-        # Taller than target — crop top/bottom
         new_h = int(img.width / target_ratio)
         top = (img.height - new_h) // 2
         return img.crop((0, top, img.width, top + new_h))
 
 
-def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
-    """Stack two images vertically at same width (raw, before portrait crop)."""
+def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> "PilImage.Image":
     img1 = _open_with_exif(img1_bytes).convert("RGB")
     img2 = _open_with_exif(img2_bytes).convert("RGB")
-
     w = max(img1.width, img2.width)
     if img1.width != w:
         img1 = img1.resize((w, int(img1.height * w / img1.width)), PilImage.LANCZOS)
     if img2.width != w:
         img2 = img2.resize((w, int(img2.height * w / img2.width)), PilImage.LANCZOS)
-
     combined = PilImage.new("RGB", (w, img1.height + img2.height))
     combined.paste(img1, (0, 0))
     combined.paste(img2, (0, img1.height))
@@ -124,7 +104,6 @@ def _stack_vertically(img1_bytes: bytes, img2_bytes: bytes) -> bytes:
 
 
 def _to_portrait_frame(img: "PilImage.Image") -> bytes:
-    """Crop image to fixed 3:4 portrait frame and return JPEG bytes."""
     img = _crop_to_ratio(img, _PORTRAIT_W, _PORTRAIT_H)
     out = io.BytesIO()
     img.convert("RGB").save(out, format="JPEG", quality=85)
@@ -132,7 +111,6 @@ def _to_portrait_frame(img: "PilImage.Image") -> bytes:
 
 
 def _center_crop_to_portrait(img_bytes: bytes) -> bytes:
-    """Crop mode: center-crop to 3:4 portrait."""
     img = _open_with_exif(img_bytes).convert("RGB")
     return _to_portrait_frame(img)
 
@@ -145,11 +123,18 @@ class BaseImmichImage(ImageEntity):
     _attr_has_entity_name = True
     _attr_should_poll = True
 
-    def __init__(self, hass: HomeAssistant, hub: ImmichHub, entry_state) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        hub: ImmichHub,
+        album_state,
+        entry_id: str,
+    ) -> None:
         super().__init__(hass=hass, verify_ssl=True)
         self.hub = hub
         self.hass = hass
-        self._entry_state = entry_state
+        self._album_state = album_state
+        self._entry_id = entry_id
         self._current_image_bytes: bytes | None = None
         self._cached_asset_ids: list[str] | None = None
         self._pool_updated = None
@@ -157,9 +142,19 @@ class BaseImmichImage(ImageEntity):
         self._last_image_load = None
         self._attr_extra_state_attributes: dict = {}
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_{self._album_state.album_id}")},
+            name=f"Immich – {self._album_state.album_name}",
+            manufacturer="Immich",
+            model="Photo Frame",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
     async def async_update(self) -> None:
         interval = UPDATE_INTERVAL_MAP.get(
-            self._entry_state.update_interval,
+            self._album_state.update_interval,
             UPDATE_INTERVAL_MAP[DEFAULT_UPDATE_INTERVAL],
         )
         now = dt_util.utcnow()
@@ -192,7 +187,7 @@ class BaseImmichImage(ImageEntity):
         pool = self._cached_asset_ids
         if not pool:
             return None
-        if self._entry_state.selection_mode == SELECTION_MODE_ORDER:
+        if self._album_state.selection_mode == SELECTION_MODE_ORDER:
             idx = self._pool_index % len(pool)
             self._pool_index += 1
             return pool[idx]
@@ -208,7 +203,6 @@ class BaseImmichImage(ImageEntity):
 
     async def _load_next_image(self) -> None:
         await self._ensure_pool()
-
         asset_id = self._pick_next()
         if not asset_id:
             _LOGGER.warning("%s: no assets in pool", self.name)
@@ -218,24 +212,18 @@ class BaseImmichImage(ImageEntity):
         if not img_bytes:
             return
 
-        crop_mode = self._entry_state.crop_mode
+        crop_mode = self._album_state.crop_mode
 
         if HAS_PIL:
             try:
                 if crop_mode == CROP_MODE_COMBINE:
                     if _is_landscape(img_bytes):
-                        # Try to combine with another landscape
-                        combined_img = await self._find_and_combine(img_bytes, asset_id)
+                        img = await self._find_and_combine(img_bytes, asset_id)
                     else:
-                        combined_img = _open_with_exif(img_bytes).convert("RGB")
-                    # Always crop to fixed portrait frame
-                    img_bytes = _to_portrait_frame(combined_img)
-
+                        img = _open_with_exif(img_bytes).convert("RGB")
+                    img_bytes = _to_portrait_frame(img)
                 elif crop_mode == CROP_MODE_CROP:
                     img_bytes = _center_crop_to_portrait(img_bytes)
-
-                # CROP_MODE_ORIGINAL: serve as-is
-
             except Exception as err:
                 _LOGGER.warning("%s: image processing failed: %s", self.name, err)
 
@@ -250,7 +238,6 @@ class BaseImmichImage(ImageEntity):
         self.async_write_ha_state()
 
     async def _find_and_combine(self, first_bytes: bytes, first_id: str) -> "PilImage.Image":
-        """Try to find second landscape and stack. Returns PIL Image (not yet portrait-cropped)."""
         for attempt in range(_MAX_COMBINE_ATTEMPTS):
             second_id = self._pick_random(exclude=first_id)
             if not second_id:
@@ -259,24 +246,27 @@ class BaseImmichImage(ImageEntity):
             if second_bytes and _is_landscape(second_bytes):
                 _LOGGER.debug("%s: combining (attempt %d)", self.name, attempt + 1)
                 return _stack_vertically(first_bytes, second_bytes)
-        _LOGGER.debug("%s: no second landscape, showing single", self.name)
+        _LOGGER.debug("%s: no second landscape found", self.name)
         return _open_with_exif(first_bytes).convert("RGB")
 
 
 class ImmichImageFavorite(BaseImmichImage):
-    _attr_unique_id = "immich_frame_favorite_image"
-    _attr_name = "Immich Frame: Random favorite image"
+    _attr_name = "Media"
+
+    def __init__(self, hass, hub, album_state, entry_id):
+        super().__init__(hass, hub, album_state, entry_id)
+        self._attr_unique_id = f"{entry_id}_{album_state.album_id}_media"
 
     async def _refresh_pool(self) -> list[str]:
         return [img["id"] for img in await self.hub.list_favorite_images()]
 
 
 class ImmichImageAlbum(BaseImmichImage):
-    def __init__(self, hass, hub, entry_state, album_id: str, album_name: str):
-        super().__init__(hass, hub, entry_state)
-        self._album_id = album_id
-        self._attr_unique_id = f"immich_frame_{album_id}"
-        self._attr_name = f"Immich Frame: {album_name}"
+    _attr_name = "Media"
+
+    def __init__(self, hass, hub, album_state, entry_id):
+        super().__init__(hass, hub, album_state, entry_id)
+        self._attr_unique_id = f"{entry_id}_{album_state.album_id}_media"
 
     async def _refresh_pool(self) -> list[str]:
-        return [img["id"] for img in await self.hub.list_album_images(self._album_id)]
+        return [img["id"] for img in await self.hub.list_album_images(self._album_state.album_id)]
