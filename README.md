@@ -17,6 +17,8 @@ Built on top of [outadoc/immich-home-assistant](https://github.com/outadoc/immic
 - **Select entities** — change crop mode, selection mode, and update interval live from the UI
 - **Services** — `next_media` and `next_media_all` for use in automations
 
+<img width="1078" height="732" alt="image" src="https://github.com/user-attachments/assets/fbc94b17-e092-466c-95b8-86c3e773717d" />
+
 ---
 
 ## Installation
