@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration for [Immich](https://immich.app) that displays photos from your albums on dashboards and digital photo frames.
 
-Built on top of [outadoc/immich-home-assistant](https://github.com/outadoc/immich-home-assistant) with additional features for photo frame use cases.
+Built on top of [outadoc/immich-home-assistant](https://github.com/outadoc/immich-home-assistant) with additional features for photo frame use cases, heavily inspirred of [Daanoz/ha-google-photos](https://github.com/Daanoz/ha-google-photos) 
 
 ---
 
