@@ -27,7 +27,7 @@ Built on top of [outadoc/immich-home-assistant](https://github.com/outadoc/immic
 
 1. In HACS, go to **Integrations → Custom repositories**
 2. Add `https://github.com/Seekersdk/HA-Immich` as type **Integration**
-3. Find **Immich Photos** and click **Install**
+3. Find **Immich Frame** and click **Install**
 4. Restart Home Assistant
 
 ### Manual
