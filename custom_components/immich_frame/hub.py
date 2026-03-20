@@ -45,6 +45,23 @@ class ImmichHub:
         except aiohttp.ClientError as exception:
             raise CannotConnect from exception
 
+    async def get_thumbnail(self, asset_id: str) -> bytes | None:
+        """Download preview thumbnail (fast, ~500KB JPEG)."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = urljoin(self.host, f"/api/assets/{asset_id}/thumbnail")
+                headers = {_HEADER_API_KEY: self.api_key}
+                async with session.get(
+                    url=url, headers=headers, params={"size": "preview"}
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.error("Thumbnail error: status=%d", response.status)
+                        return None
+                    return await response.read()
+        except aiohttp.ClientError as exception:
+            _LOGGER.error("Error fetching thumbnail: %s", exception)
+            return None
+
     async def get_asset_info(self, asset_id: str) -> dict | None:
         try:
             async with aiohttp.ClientSession() as session:
@@ -57,27 +74,14 @@ class ImmichHub:
         except aiohttp.ClientError as exception:
             raise CannotConnect from exception
 
-    async def download_asset(self, asset_id: str) -> bytes | None:
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = urljoin(self.host, f"/api/assets/{asset_id}/original")
-                headers = {_HEADER_API_KEY: self.api_key}
-                async with session.get(url=url, headers=headers) as response:
-                    if response.status != 200:
-                        return None
-                    if response.content_type not in _ALLOWED_MIME_TYPES:
-                        _LOGGER.error("Unsupported MIME type: %s", response.content_type)
-                        return None
-                    return await response.read()
-        except aiohttp.ClientError as exception:
-            raise CannotConnect from exception
-
     async def list_favorite_images(self) -> list[dict]:
         try:
             async with aiohttp.ClientSession() as session:
                 url = urljoin(self.host, "/api/search/metadata")
                 headers = {"Accept": "application/json", _HEADER_API_KEY: self.api_key}
-                async with session.post(url=url, headers=headers, data={"isFavorite": "true"}) as response:
+                async with session.post(
+                    url=url, headers=headers, data={"isFavorite": "true"}
+                ) as response:
                     if response.status != 200:
                         raise ApiError()
                     favorites = await response.json()
